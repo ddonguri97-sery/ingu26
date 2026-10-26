@@ -1,11 +1,330 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <title>우리 동네 인구 구조</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>우리 동네 인구 찾기</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 30px 16px;
+  font-family: Arial, "Malgun Gothic", sans-serif;
+  background: #f3f6fb;
+  color: #24324a;
+}
+main {
+  max-width: 720px;
+  margin: 20px auto;
+  background: white;
+  padding: 28px;
+  border-radius: 20px;
+  box-shadow: 0 8px 30px #0000000a;
+}
+h1 { margin-top: 0; font-size: 28px; }
+p { color: #68768a; line-height: 1.6; }
+label { display: block; font-weight: bold; margin: 24px 0 8px; }
+input {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid #ccd5e2;
+  border-radius: 10px;
+  font-size: 16px;
+}
+#results {
+  display: none;
+  margin-top: 8px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+.result {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: none;
+  background: white;
+  text-align: left;
+  font-size: 15px;
+  cursor: pointer;
+}
+.result:hover { background: #edf3ff; }
+#status { font-size: 14px; margin-top: 15px; }
+#output { margin-top: 25px; }
+#selected { font-size: 20px; font-weight: bold; margin-bottom: 16px; }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.stat {
+  background: #f5f8ff;
+  border-radius: 12px;
+  padding: 18px 12px;
+  text-align: center;
+}
+.name { color: #68768a; font-size: 14px; margin-bottom: 12px; }
+.number { font-size: 23px; font-weight: bold; overflow-wrap: anywhere; }
+footer { margin-top: 24px; font-size: 12px; color: #8792a3; }
+@media (max-width: 520px) {
+  main { padding: 20px; }
+  .stats { grid-template-columns: 1fr; }
+  .stat { display: flex; justify-content: space-between; align-items: center; }
+  .name { margin: 0; }
+  .number { font-size: 20px; }
+}
+</style>
 </head>
+
 <body>
-  <h1>🏘️ 우리 동네 인구 구조</h1>
-  <p>곧 우리 동네 인구 데이터가 여기에 나타납니다! (레벨 2에서 만들어요)</p>
+<main>
+  <h1>우리 동네 인구 찾기</h1>
+  <p>동네 이름을 검색하고 선택하면 총인구와 남녀 인구를 확인할 수 있어요.</p>
+
+  <label for="search">동네 이름 검색</label>
+  <input id="search" type="search"
+         placeholder="예: 봉천동, 역삼1동, 제주"
+         autocomplete="off">
+
+  <div id="results"></div>
+  <p id="status">인구 데이터를 불러오는 중입니다.</p>
+
+  <div id="output" hidden>
+    <div id="selected"></div>
+    <div class="stats">
+      <div class="stat">
+        <div class="name">총인구</div>
+        <div class="number" id="total">-</div>
+      </div>
+      <div class="stat">
+        <div class="name">남자 인구</div>
+        <div class="number" id="male">-</div>
+      </div>
+      <div class="stat">
+        <div class="name">여자 인구</div>
+        <div class="number" id="female">-</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    자료: 행정안전부 주민등록 인구통계 원본 CSV
+  </footer>
+</main>
+
+<script>
+const CSV_URL =
+  "https://raw.githubusercontent.com/greatsong/modudata/main/data/population_latest.csv";
+
+const searchInput = document.getElementById("search");
+const resultsDiv = document.getElementById("results");
+const statusDiv = document.getElementById("status");
+const outputDiv = document.getElementById("output");
+
+let records = [];
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+
+    if (quoted) {
+      if (c === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') {
+        quoted = false;
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"') {
+        quoted = true;
+      } else if (c === ",") {
+        row.push(field);
+        field = "";
+      } else if (c === "\n") {
+        row.push(field.replace(/\r$/, ""));
+        rows.push(row);
+        row = [];
+        field = "";
+      } else {
+        field += c;
+      }
+    }
+  }
+
+  if (field.length || row.length) {
+    row.push(field.replace(/\r$/, ""));
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+// 지역명 뒤에 붙은 괄호 속 숫자 제거
+function cleanName(name) {
+  return String(name || "")
+    .replace(/\s*\(\s*\d+\s*\)\s*/g, "")
+    .trim();
+}
+
+// 숫자 안의 쉼표 제거
+function parseNumber(value) {
+  const n = Number(String(value || "").replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+// 월별 열 중 가장 최근 열 찾기
+function findColumn(headers, gender, suffix) {
+  const candidates = headers.filter(h =>
+    h.includes("_" + gender + "_") && h.endsWith(suffix)
+  );
+
+  if (!candidates.length) return -1;
+
+  candidates.sort((a, b) => {
+    const da = a.match(/(\d{4})년\s*(\d{1,2})월/);
+    const db = b.match(/(\d{4})년\s*(\d{1,2})월/);
+
+    const va = da ? Number(da[1]) * 12 + Number(da[2]) : 0;
+    const vb = db ? Number(db[1]) * 12 + Number(db[2]) : 0;
+
+    return vb - va;
+  });
+
+  return headers.indexOf(candidates[0]);
+}
+
+function formatNumber(n) {
+  return n === null ? "자료 없음" : n.toLocaleString("ko-KR") + "명";
+}
+
+function showResults(query) {
+  resultsDiv.innerHTML = "";
+
+  const q = query.trim().toLowerCase();
+
+  if (!q || !records.length) {
+    resultsDiv.style.display = "none";
+    return;
+  }
+
+  const matches = records
+    .filter(r => r.name.toLowerCase().includes(q))
+    .slice(0, 100);
+
+  if (!matches.length) {
+    const item = document.createElement("div");
+    item.className = "result";
+    item.textContent = "검색 결과가 없습니다.";
+    resultsDiv.appendChild(item);
+  } else {
+    matches.forEach(record => {
+      const button = document.createElement("button");
+      button.className = "result";
+      button.type = "button";
+      button.textContent = record.name;
+
+      button.addEventListener("click", () => {
+        document.getElementById("selected").textContent = record.name;
+        document.getElementById("total").textContent =
+          formatNumber(record.total);
+        document.getElementById("male").textContent =
+          formatNumber(record.male);
+        document.getElementById("female").textContent =
+          formatNumber(record.female);
+
+        outputDiv.hidden = false;
+        resultsDiv.style.display = "none";
+        searchInput.value = record.name;
+        statusDiv.textContent = "선택한 지역의 인구 정보입니다.";
+      });
+
+      resultsDiv.appendChild(button);
+    });
+  }
+
+  resultsDiv.style.display = "block";
+}
+
+searchInput.addEventListener("input", () => {
+  showResults(searchInput.value);
+});
+
+document.addEventListener("click", event => {
+  if (!event.target.closest("#search") &&
+      !event.target.closest("#results")) {
+    resultsDiv.style.display = "none";
+  }
+});
+
+async function loadData() {
+  try {
+    const response = await fetch(CSV_URL);
+
+    if (!response.ok) {
+      throw new Error("CSV 파일을 불러오지 못했습니다.");
+    }
+
+    const buffer = await response.arrayBuffer();
+
+    // 원본 CSV는 EUC-KR 인코딩
+    const text = new TextDecoder("euc-kr").decode(buffer)
+      .replace(/^\uFEFF/, "");
+
+    const rows = parseCSV(text);
+
+    if (rows.length < 2) {
+      throw new Error("CSV 데이터가 비어 있습니다.");
+    }
+
+    const headers = rows[0].map(h => h.trim());
+
+    const nameIndex = headers.findIndex(h =>
+      /행정구역|지역명|행정구역명|구역명/.test(h)
+    );
+
+    const totalIndex = findColumn(headers, "계", "총인구수");
+    const maleIndex = findColumn(headers, "남", "총인구수");
+    const femaleIndex = findColumn(headers, "여", "총인구수");
+
+    if (
+      nameIndex < 0 ||
+      totalIndex < 0 ||
+      maleIndex < 0 ||
+      femaleIndex < 0
+    ) {
+      throw new Error("CSV의 열 이름을 확인해 주세요.");
+    }
+
+    records = rows.slice(1)
+      .filter(row => row[nameIndex] && row[nameIndex].trim())
+      .map(row => ({
+        name: cleanName(row[nameIndex]),
+        total: parseNumber(row[totalIndex]),
+        male: parseNumber(row[maleIndex]),
+        female: parseNumber(row[femaleIndex])
+      }))
+      .filter(r => r.name);
+
+    statusDiv.textContent =
+      `데이터 로드 완료! ${records.length.toLocaleString("ko-KR")}개 지역을 검색할 수 있습니다.`;
+
+  } catch (error) {
+    console.error(error);
+    statusDiv.textContent =
+      "데이터를 불러오지 못했습니다. 인터넷 연결 또는 CSV 주소를 확인해 주세요.";
+  }
+}
+
+loadData();
+</script>
 </body>
 </html>
